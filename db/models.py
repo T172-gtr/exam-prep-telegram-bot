@@ -72,11 +72,8 @@ class PlanTemplate(Base):
     id: Mapped[int] = mapped_column(Integer, primary_key=True)
     subject_id: Mapped[int] = mapped_column(ForeignKey("subjects.id"), nullable=False)
     target_level: Mapped[str] = mapped_column(String(32), nullable=False)
-    # low / medium / high / max
     daily_minutes: Mapped[int] = mapped_column(Integer, nullable=False)
-    # 15 / 30 / 45 / 60 / 90
     variant_index: Mapped[int] = mapped_column(Integer, default=1)
-    # 1, 2, 3 — несколько вариантов для одного набора параметров
     title: Mapped[str] = mapped_column(String(256), nullable=False)
     description: Mapped[Optional[str]] = mapped_column(Text)
     total_days: Mapped[int] = mapped_column(Integer, default=60)
@@ -96,12 +93,25 @@ class Task(Base):
     id: Mapped[int] = mapped_column(Integer, primary_key=True)
     subject_id: Mapped[int] = mapped_column(ForeignKey("subjects.id"), nullable=False)
     target_level: Mapped[str] = mapped_column(String(32), nullable=False)
-    # low / medium / high / max
     title: Mapped[str] = mapped_column(String(256), nullable=False)
     body: Mapped[str] = mapped_column(Text, nullable=False)
+
+    # legacy field, оставлен для обратной совместимости
     answer: Mapped[Optional[str]] = mapped_column(Text)
+
+    # эталонный ответ для автопроверки
+    correct_answer: Mapped[Optional[str]] = mapped_column(Text)
+    # дополнительные принимаемые формулировки, разделённые символом "|"
+    acceptable_answers: Mapped[Optional[str]] = mapped_column(Text)
+
     hint: Mapped[Optional[str]] = mapped_column(Text)
+    explanation: Mapped[Optional[str]] = mapped_column(Text)
     tags: Mapped[Optional[str]] = mapped_column(String(512))  # comma-separated
+
+    # медиа / источник
+    image_url: Mapped[Optional[str]] = mapped_column(String(1024))
+    image_file_id: Mapped[Optional[str]] = mapped_column(String(512))
+    source_url: Mapped[Optional[str]] = mapped_column(String(1024))
 
     subject: Mapped["Subject"] = relationship(back_populates="tasks")
     progress_items: Mapped[List["UserProgress"]] = relationship(back_populates="task")
@@ -120,17 +130,32 @@ class User(Base):
     full_name: Mapped[Optional[str]] = mapped_column(String(256))
     grade_id: Mapped[Optional[int]] = mapped_column(ForeignKey("grade_levels.id"))
     exam_type_id: Mapped[Optional[int]] = mapped_column(ForeignKey("exam_types.id"))
+    # subject_id оставлен для обратной совместимости (как «основной» предмет),
+    # но реально используется таблица user_subjects.
     subject_id: Mapped[Optional[int]] = mapped_column(ForeignKey("subjects.id"))
     target_level: Mapped[Optional[str]] = mapped_column(String(32))
     daily_minutes: Mapped[Optional[int]] = mapped_column(Integer)
+
+    # настройки рассылки
+    notify_count: Mapped[int] = mapped_column(Integer, default=1)
+    # список времён в формате "HH:MM,HH:MM,HH:MM"
+    notify_times: Mapped[str] = mapped_column(String(64), default="08:00")
+    # legacy поле, более не используется планировщиком напрямую
     notify_time: Mapped[str] = mapped_column(String(8), default="08:00")
+
     is_active: Mapped[bool] = mapped_column(Boolean, default=True)
     created_at: Mapped[datetime] = mapped_column(DateTime, server_default=func.now())
     onboarded: Mapped[bool] = mapped_column(Boolean, default=False)
 
+    # активная задача, на которую ожидается текстовый ответ
+    active_task_id: Mapped[Optional[int]] = mapped_column(ForeignKey("tasks.id"))
+
     grade: Mapped[Optional["GradeLevel"]] = relationship(foreign_keys=[grade_id])
     exam_type: Mapped[Optional["ExamType"]] = relationship(foreign_keys=[exam_type_id])
     subject: Mapped[Optional["Subject"]] = relationship(foreign_keys=[subject_id])
+    subjects: Mapped[List["UserSubject"]] = relationship(
+        back_populates="user", cascade="all, delete-orphan"
+    )
     plans: Mapped[List["UserPlan"]] = relationship(back_populates="user",
                                                     cascade="all, delete-orphan")
     progress: Mapped[List["UserProgress"]] = relationship(back_populates="user",
@@ -140,6 +165,28 @@ class User(Base):
     )
     payments: Mapped[List["Payment"]] = relationship(back_populates="user",
                                                       cascade="all, delete-orphan")
+
+
+# ────────────────────────────────────────────────────────────
+# User subjects (множественный выбор предметов внутри одного экзамена)
+# ────────────────────────────────────────────────────────────
+
+class UserSubject(Base):
+    """Связь пользователь ↔ выбранный предмет.
+
+    Все записи пользователя должны относиться к одному и тому же
+    grade_id/exam_type_id — это контролируется на уровне сервиса.
+    """
+    __tablename__ = "user_subjects"
+    __table_args__ = (UniqueConstraint("user_id", "subject_id"),)
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    user_id: Mapped[int] = mapped_column(ForeignKey("users.id"), nullable=False)
+    subject_id: Mapped[int] = mapped_column(ForeignKey("subjects.id"), nullable=False)
+    created_at: Mapped[datetime] = mapped_column(DateTime, server_default=func.now())
+
+    user: Mapped["User"] = relationship(back_populates="subjects")
+    subject: Mapped["Subject"] = relationship()
 
 
 # ────────────────────────────────────────────────────────────
@@ -209,7 +256,6 @@ class Payment(Base):
     user_id: Mapped[int] = mapped_column(ForeignKey("users.id"), nullable=False)
     amount_rub: Mapped[int] = mapped_column(Integer, nullable=False)
     status: Mapped[str] = mapped_column(String(32), default="pending")
-    # "pending" | "success" | "failed" | "refunded"
     plan_type: Mapped[str] = mapped_column(String(32), nullable=False)
     provider_tx_id: Mapped[Optional[str]] = mapped_column(String(256))
     created_at: Mapped[datetime] = mapped_column(DateTime, server_default=func.now())

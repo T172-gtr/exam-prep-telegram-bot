@@ -3,7 +3,7 @@ Inline keyboard builders.
 """
 from aiogram.types import InlineKeyboardMarkup, InlineKeyboardButton
 from aiogram.utils.keyboard import InlineKeyboardBuilder
-from typing import List
+from typing import List, Iterable
 
 from db.models import GradeLevel, ExamType, Subject, PlanTemplate
 
@@ -28,11 +28,24 @@ def exams_kb(exams: List[ExamType]) -> InlineKeyboardMarkup:
     return builder.as_markup()
 
 
-def subjects_kb(subjects: List[Subject]) -> InlineKeyboardMarkup:
+def subjects_multi_kb(
+    subjects: List[Subject],
+    selected_ids: Iterable[int],
+) -> InlineKeyboardMarkup:
+    """Множественный выбор предметов: галочка показывает выбранный."""
+    selected = set(selected_ids)
     builder = InlineKeyboardBuilder()
     for s in subjects:
-        builder.button(text=s.name, callback_data=f"subject:{s.id}")
+        prefix = "✅ " if s.id in selected else "▫️ "
+        builder.button(
+            text=f"{prefix}{s.name}",
+            callback_data=f"subj_toggle:{s.id}",
+        )
     builder.adjust(2)
+    builder.row(
+        InlineKeyboardButton(text="✔️ Готово", callback_data="subj_done"),
+        InlineKeyboardButton(text="🔄 Сбросить", callback_data="subj_reset"),
+    )
     return builder.as_markup()
 
 
@@ -86,6 +99,16 @@ def confirm_plan_kb(template_id: int) -> InlineKeyboardMarkup:
     return builder.as_markup()
 
 
+def setup_more_kb() -> InlineKeyboardMarkup:
+    """После сохранения плана: предложить настроить план по следующему предмету
+    или завершить настройку."""
+    builder = InlineKeyboardBuilder()
+    builder.button(text="➕ Настроить следующий предмет", callback_data="setup_next")
+    builder.button(text="🏁 Завершить настройку",          callback_data="setup_done")
+    builder.adjust(1)
+    return builder.as_markup()
+
+
 # ──────────────────────────────────────────────────────────────
 # Subscribe
 # ──────────────────────────────────────────────────────────────
@@ -105,14 +128,40 @@ def subscribe_kb(price: int) -> InlineKeyboardMarkup:
 
 
 # ──────────────────────────────────────────────────────────────
-# Task answer
+# Task answer (fallback кнопки + подсказка)
 # ──────────────────────────────────────────────────────────────
 
 def task_answer_kb(task_id: int) -> InlineKeyboardMarkup:
     builder = InlineKeyboardBuilder()
-    builder.button(text="✅ Верно",         callback_data=f"task_ans:{task_id}:correct")
-    builder.button(text="❌ Неверно",       callback_data=f"task_ans:{task_id}:wrong")
-    builder.button(text="💡 Подсказка",     callback_data=f"task_hint:{task_id}")
-    builder.button(text="👁 Показать ответ", callback_data=f"task_reveal:{task_id}")
-    builder.adjust(2, 2)
+    builder.button(text="💡 Подсказка",        callback_data=f"task_hint:{task_id}")
+    builder.button(text="🚫 Пропустить",       callback_data=f"task_skip:{task_id}")
+    builder.button(text="👁 Показать ответ",   callback_data=f"task_reveal:{task_id}")
+    builder.adjust(2, 1)
+    return builder.as_markup()
+
+
+# ──────────────────────────────────────────────────────────────
+# Schedule (рассылка): количество и время
+# ──────────────────────────────────────────────────────────────
+
+def schedule_count_kb(current: int = 1) -> InlineKeyboardMarkup:
+    builder = InlineKeyboardBuilder()
+    for n in (1, 2, 3):
+        mark = " ✓" if n == current else ""
+        builder.button(text=f"{n}/день{mark}", callback_data=f"sch_count:{n}")
+    builder.adjust(3)
+    return builder.as_markup()
+
+
+def schedule_time_presets_kb(slot_index: int) -> InlineKeyboardMarkup:
+    """Кнопки-пресеты времени + возможность ручного ввода."""
+    presets = ["07:30", "08:00", "12:00", "15:00", "18:00", "20:00", "21:30"]
+    builder = InlineKeyboardBuilder()
+    for t in presets:
+        builder.button(text=t, callback_data=f"sch_time:{slot_index}:{t}")
+    builder.adjust(4)
+    builder.row(InlineKeyboardButton(
+        text="⌨️ Ввести вручную HH:MM",
+        callback_data=f"sch_manual:{slot_index}",
+    ))
     return builder.as_markup()

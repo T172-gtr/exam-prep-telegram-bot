@@ -1,0 +1,24 @@
+[
+  {
+    "exam_code": "oge",
+    "subject_code": "math",
+    "target_level": "low",
+    "title": "Пример импорта: проценты",
+    "body": "Найдите 20% от числа 150.",
+    "correct_answer": "30",
+    "acceptable_answers": "30.0",
+    "hint": "20% = 0.2",
+    "explanation": "150 · 0.2 = 30",
+    "tags": "проценты,арифметика"
+  },
+  {
+    "exam_code": "ege",
+    "subject_code": "math_p",
+    "target_level": "medium",
+    "title": "Пример импорта: задача по чертежу",
+    "body": "По чертежу найдите длину стороны AB.",
+    "correct_answer": "10",
+    "image_url": "https://example.com/triangle.png",
+    "source_url": "https://example.com/source/123"
+  }
+]

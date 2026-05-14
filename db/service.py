@@ -1,15 +1,17 @@
 """
 Database service layer — async helper functions used by handlers.
 """
-from datetime import datetime, timezone
-from typing import List, Optional
-from sqlalchemy import select, func
+from datetime import datetime, timezone, timedelta
+from typing import List, Optional, Iterable
+
+from sqlalchemy import select, func, and_, delete
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
 
 from .models import (
     GradeLevel, ExamType, Subject, PlanTemplate, Task,
-    User, UserPlan, UserProgress, Subscription, Payment,
+    User, UserPlan, UserProgress, UserSubject,
+    Subscription, Payment,
 )
 
 
@@ -83,6 +85,52 @@ async def get_grade(session: AsyncSession, grade_id: int) -> Optional[GradeLevel
 
 
 # ──────────────────────────────────────────────
+# User subjects (multi-selection)
+# ──────────────────────────────────────────────
+
+async def get_user_subjects(session: AsyncSession, user_id: int) -> List[UserSubject]:
+    res = await session.execute(
+        select(UserSubject)
+        .options(
+            selectinload(UserSubject.subject)
+            .selectinload(Subject.exam_type)
+            .selectinload(ExamType.grade)
+        )
+        .where(UserSubject.user_id == user_id)
+        .order_by(UserSubject.id)
+    )
+    return list(res.scalars().all())
+
+
+async def add_user_subject(session: AsyncSession, user_id: int, subject_id: int) -> bool:
+    """Добавить предмет пользователю. Возвращает True если добавлено, False если уже был."""
+    res = await session.execute(
+        select(UserSubject).where(
+            UserSubject.user_id == user_id,
+            UserSubject.subject_id == subject_id,
+        )
+    )
+    if res.scalar_one_or_none() is not None:
+        return False
+    session.add(UserSubject(user_id=user_id, subject_id=subject_id))
+    await session.flush()
+    return True
+
+
+async def remove_user_subject(session: AsyncSession, user_id: int, subject_id: int) -> None:
+    await session.execute(
+        delete(UserSubject).where(
+            UserSubject.user_id == user_id,
+            UserSubject.subject_id == subject_id,
+        )
+    )
+
+
+async def clear_user_subjects(session: AsyncSession, user_id: int) -> None:
+    await session.execute(delete(UserSubject).where(UserSubject.user_id == user_id))
+
+
+# ──────────────────────────────────────────────
 # Plan templates
 # ──────────────────────────────────────────────
 
@@ -115,12 +163,24 @@ async def get_plan_template(session: AsyncSession, template_id: int) -> Optional
 
 async def create_user_plan(session: AsyncSession, user_id: int,
                             template_id: int) -> UserPlan:
-    # deactivate existing plans
+    """Создаёт активный план для пользователя по конкретному предмету.
+
+    Деактивирует только предыдущий план по тому же предмету,
+    не трогая планы по другим предметам.
+    """
+    template = await get_plan_template(session, template_id)
+    if template is None:
+        raise ValueError(f"Template {template_id} not found")
+
+    # деактивируем предыдущие активные планы по этому же предмету
     res = await session.execute(
-        select(UserPlan).where(UserPlan.user_id == user_id, UserPlan.is_active == True)
+        select(UserPlan)
+        .options(selectinload(UserPlan.template))
+        .where(UserPlan.user_id == user_id, UserPlan.is_active == True)
     )
     for old in res.scalars().all():
-        old.is_active = False
+        if old.template.subject_id == template.subject_id:
+            old.is_active = False
 
     plan = UserPlan(user_id=user_id, template_id=template_id)
     session.add(plan)
@@ -128,13 +188,35 @@ async def create_user_plan(session: AsyncSession, user_id: int,
     return plan
 
 
+async def deactivate_all_user_plans(session: AsyncSession, user_id: int) -> None:
+    """Деактивирует все планы пользователя (используется при сбросе подготовки)."""
+    res = await session.execute(
+        select(UserPlan).where(UserPlan.user_id == user_id, UserPlan.is_active == True)
+    )
+    for plan in res.scalars().all():
+        plan.is_active = False
+
+
 async def get_active_plan(session: AsyncSession, user_id: int) -> Optional[UserPlan]:
+    """Возвращает «основной» активный план (первый по id) — для обратной совместимости."""
     res = await session.execute(
         select(UserPlan)
         .options(selectinload(UserPlan.template).selectinload(PlanTemplate.subject))
         .where(UserPlan.user_id == user_id, UserPlan.is_active == True)
+        .order_by(UserPlan.id)
     )
-    return res.scalar_one_or_none()
+    return res.scalars().first()
+
+
+async def get_active_plans(session: AsyncSession, user_id: int) -> List[UserPlan]:
+    """Все активные планы пользователя (по каждому выбранному предмету)."""
+    res = await session.execute(
+        select(UserPlan)
+        .options(selectinload(UserPlan.template).selectinload(PlanTemplate.subject))
+        .where(UserPlan.user_id == user_id, UserPlan.is_active == True)
+        .order_by(UserPlan.id)
+    )
+    return list(res.scalars().all())
 
 
 # ──────────────────────────────────────────────
@@ -147,7 +229,11 @@ async def get_next_task(
     subject_id: int,
     target_level: str,
 ) -> Optional[Task]:
-    """Return a task the user has not yet completed."""
+    """Возвращает задание, которое пользователь ещё не получал.
+
+    После выполнения всех заданий по subject+level — возвращает None
+    (НЕ зацикливаем — пользователь должен сам сменить план/предмет).
+    """
     done_subq = (
         select(UserProgress.task_id).where(UserProgress.user_id == user_id)
     )
@@ -158,23 +244,10 @@ async def get_next_task(
             Task.target_level == target_level,
             Task.id.not_in(done_subq),
         )
+        .order_by(Task.id)
         .limit(1)
     )
-    task = res.scalar_one_or_none()
-
-    # If all tasks done, cycle from beginning
-    if task is None:
-        res = await session.execute(
-            select(Task)
-            .where(
-                Task.subject_id   == subject_id,
-                Task.target_level == target_level,
-            )
-            .limit(1)
-        )
-        task = res.scalar_one_or_none()
-
-    return task
+    return res.scalar_one_or_none()
 
 
 async def get_task(session: AsyncSession, task_id: int) -> Optional[Task]:
@@ -239,7 +312,6 @@ async def activate_subscription(
     sub.is_active = True
     sub.plan_type = plan_type
     sub.started_at = datetime.now(timezone.utc)
-    from datetime import timedelta
     sub.expires_at = datetime.now(timezone.utc) + timedelta(days=days)
     return sub
 
@@ -262,7 +334,7 @@ async def create_payment(
 
 
 async def get_all_subscribed_users(session: AsyncSession) -> List[User]:
-    """Return users who have an active plan and notifications enabled."""
+    """Пользователи с активным планом и включёнными уведомлениями."""
     res = await session.execute(
         select(User)
         .join(UserPlan, UserPlan.user_id == User.id)
@@ -270,3 +342,66 @@ async def get_all_subscribed_users(session: AsyncSession) -> List[User]:
         .distinct()
     )
     return list(res.scalars().all())
+
+
+# ──────────────────────────────────────────────
+# Admin / stats helpers
+# ──────────────────────────────────────────────
+
+async def get_subscription_stats(session: AsyncSession) -> dict:
+    """Сводка по подпискам и платежам для /admin."""
+    total_users = (await session.execute(
+        select(func.count()).select_from(User)
+    )).scalar() or 0
+
+    active_premium = (await session.execute(
+        select(func.count()).select_from(Subscription).where(
+            Subscription.is_active == True,
+            Subscription.plan_type != "free",
+        )
+    )).scalar() or 0
+
+    by_plan_rows = (await session.execute(
+        select(Subscription.plan_type, func.count())
+        .where(Subscription.is_active == True, Subscription.plan_type != "free")
+        .group_by(Subscription.plan_type)
+    )).all()
+
+    pay_total = (await session.execute(
+        select(func.count()).select_from(Payment)
+    )).scalar() or 0
+    pay_success = (await session.execute(
+        select(func.count()).select_from(Payment).where(Payment.status == "success")
+    )).scalar() or 0
+    pay_amount = (await session.execute(
+        select(func.coalesce(func.sum(Payment.amount_rub), 0))
+        .where(Payment.status == "success")
+    )).scalar() or 0
+
+    return {
+        "total_users":     total_users,
+        "active_premium":  active_premium,
+        "by_plan":         dict(by_plan_rows),
+        "payments_total":  pay_total,
+        "payments_ok":     pay_success,
+        "payments_amount": pay_amount,
+    }
+
+
+async def get_subject_distribution(session: AsyncSession) -> list[tuple]:
+    """Сколько пользователей выбрали каждый предмет (с классом и экзаменом)."""
+    rows = (await session.execute(
+        select(
+            GradeLevel.label,
+            ExamType.name,
+            Subject.name,
+            func.count(UserSubject.id),
+        )
+        .join(Subject, UserSubject.subject_id == Subject.id)
+        .join(ExamType, Subject.exam_type_id == ExamType.id)
+        .join(GradeLevel, ExamType.grade_id == GradeLevel.id)
+        .group_by(GradeLevel.label, ExamType.name, Subject.name)
+        .order_by(func.count(UserSubject.id).desc())
+        .limit(30)
+    )).all()
+    return list(rows)
