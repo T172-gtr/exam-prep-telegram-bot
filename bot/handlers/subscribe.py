@@ -6,7 +6,7 @@ from aiogram.filters import Command
 from aiogram.types import Message, CallbackQuery
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from bot.keyboards import subscribe_kb
+from bot.keyboards import subscribe_kb, MENU_SUBSCRIBE
 from db.service import (
     get_or_create_subscription,
     create_payment, activate_subscription,
@@ -30,7 +30,7 @@ PLAN_NAMES = {
 
 
 @router.message(Command("subscribe"))
-@router.message(F.text == "💎 Подписка")
+@router.message(F.text == MENU_SUBSCRIBE)
 async def cmd_subscribe(message: Message, session: AsyncSession) -> None:
     sub = await get_or_create_subscription(session, message.from_user.id)
 
