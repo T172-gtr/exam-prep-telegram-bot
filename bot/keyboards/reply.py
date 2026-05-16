@@ -2,31 +2,27 @@ from aiogram.types import ReplyKeyboardMarkup, KeyboardButton, ReplyKeyboardRemo
 from aiogram.utils.keyboard import ReplyKeyboardBuilder
 
 
-# Тексты кнопок главного меню — используются в фильтрах F.text
+# Тексты кнопок нижней панели
+MENU_MAIN      = "📋 Меню"
+MENU_SUBSCRIBE = "💳 Управление подпиской"
+MENU_SUPPORT   = "🆘 Поддержка"
+
+# Тексты кнопок внутри inline-подменю (используются в фильтрах F.text / callback)
 MENU_SETUP     = "🎯 Настроить подготовку"
 MENU_SUBJECTS  = "📚 Мои предметы"
 MENU_SCHEDULE  = "📅 Рассылка"
 MENU_PROGRESS  = "📈 Прогресс"
 MENU_TODAY     = "📝 Задание сейчас"
-MENU_SUBSCRIBE = "💳 Подписка"
 MENU_HELP      = "ℹ️ Помощь"
 
 
 def main_menu_kb() -> ReplyKeyboardMarkup:
-    """Главное reply-меню. Компактная сетка из 4 рядов."""
+    """Нижняя reply-панель — всего 3 кнопки."""
     builder = ReplyKeyboardBuilder()
-    builder.row(KeyboardButton(text=MENU_SETUP))
-    builder.row(
-        KeyboardButton(text=MENU_SUBJECTS),
-        KeyboardButton(text=MENU_TODAY),
-    )
-    builder.row(
-        KeyboardButton(text=MENU_SCHEDULE),
-        KeyboardButton(text=MENU_PROGRESS),
-    )
+    builder.row(KeyboardButton(text=MENU_MAIN))
     builder.row(
         KeyboardButton(text=MENU_SUBSCRIBE),
-        KeyboardButton(text=MENU_HELP),
+        KeyboardButton(text=MENU_SUPPORT),
     )
     return builder.as_markup(resize_keyboard=True)
 

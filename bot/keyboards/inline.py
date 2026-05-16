@@ -9,6 +9,22 @@ from db.models import GradeLevel, ExamType, Subject, PlanTemplate
 
 
 # ──────────────────────────────────────────────────────────────
+# Главное inline-подменю (открывается по кнопке «📋 Меню»)
+# ──────────────────────────────────────────────────────────────
+
+def main_menu_inline_kb() -> InlineKeyboardMarkup:
+    """Inline-меню с 5 разделами."""
+    builder = InlineKeyboardBuilder()
+    builder.button(text="📚 Мои предметы",         callback_data="menu:subjects")
+    builder.button(text="🎯 Настроить подготовку", callback_data="menu:setup")
+    builder.button(text="📝 Задание сейчас",       callback_data="menu:today")
+    builder.button(text="📅 Рассылка",             callback_data="menu:schedule")
+    builder.button(text="📈 Прогресс",             callback_data="menu:progress")
+    builder.adjust(2, 2, 1)
+    return builder.as_markup()
+
+
+# ──────────────────────────────────────────────────────────────
 # Onboarding keyboards
 # ──────────────────────────────────────────────────────────────
 

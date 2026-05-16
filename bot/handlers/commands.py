@@ -3,12 +3,13 @@ General commands: /profile, /progress, /today, /help + кнопки меню.
 """
 from aiogram import Router, F
 from aiogram.filters import Command
-from aiogram.types import Message
+from aiogram.types import Message, CallbackQuery
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from bot.keyboards import (
-    main_menu_kb,
-    MENU_PROGRESS, MENU_TODAY, MENU_SUBJECTS, MENU_HELP,
+    main_menu_kb, main_menu_inline_kb,
+    MENU_MAIN, MENU_SUPPORT, MENU_HELP,
+    MENU_PROGRESS, MENU_TODAY, MENU_SUBJECTS,
 )
 from db.service import (
     get_user, get_active_plans, count_progress,
@@ -16,6 +17,7 @@ from db.service import (
     get_or_create_subscription,
 )
 from bot.handlers.tasks import send_today_task
+from bot.handlers.schedule import cmd_schedule
 
 router = Router()
 
@@ -37,6 +39,13 @@ HELP_TEXT = (
     "бот сравнит его с эталоном и сразу скажет, верно или нет."
 )
 
+SUPPORT_TEXT = (
+    "🆘 <b>Поддержка</b>\n\n"
+    "Если у тебя возникли вопросы или проблемы с ботом — напиши нам:\n\n"
+    "📩 @exam_bot_support\n\n"
+    "Мы ответим в течение 24 часов."
+)
+
 
 # ── /help ────────────────────────────────────────────────────
 
@@ -46,6 +55,101 @@ async def cmd_help(message: Message) -> None:
     await message.answer(HELP_TEXT, parse_mode="HTML", reply_markup=main_menu_kb())
 
 
+# ── «📋 Меню» — открывает inline-подменю ─────────────────────
+
+@router.message(F.text == MENU_MAIN)
+@router.message(Command("menu"))
+async def cmd_show_menu(message: Message) -> None:
+    await message.answer(
+        "📋 <b>Главное меню</b>\n\nВыбери раздел:",
+        reply_markup=main_menu_inline_kb(),
+        parse_mode="HTML",
+    )
+
+
+# ── Обработчики inline-кнопок подменю ────────────────────────
+
+@router.callback_query(F.data == "menu:subjects")
+async def cb_menu_subjects(call: CallbackQuery, session: AsyncSession) -> None:
+    await call.answer()
+    subjs = await get_user_subjects(session, call.from_user.id)
+    plans = await get_active_plans(session, call.from_user.id)
+    if not subjs:
+        await call.message.answer(
+            "Пока не выбрано ни одного предмета. "
+            "Нажми «🎯 Настроить подготовку» в меню или /setup."
+        )
+        return
+    plan_by_subj = {p.template.subject_id: p for p in plans}
+    lines = ["📚 <b>Мои предметы</b>"]
+    for us in subjs:
+        s = us.subject
+        p = plan_by_subj.get(s.id)
+        if p:
+            plan_title = p.template.title.split("·")[0].strip()
+            lines.append(
+                f"• <b>{s.name}</b> — план «{plan_title}», "
+                f"день {p.current_day}/{p.template.total_days}"
+            )
+        else:
+            lines.append(f"• <b>{s.name}</b> — план не настроен")
+    lines.append("")
+    lines.append("Чтобы изменить набор предметов — /setup (сбросит планы).")
+    await call.message.answer("\n".join(lines), parse_mode="HTML")
+
+
+@router.callback_query(F.data == "menu:setup")
+async def cb_menu_setup(call: CallbackQuery) -> None:
+    await call.answer()
+    await call.message.answer(
+        "Используй команду /setup для настройки подготовки."
+    )
+
+
+@router.callback_query(F.data == "menu:today")
+async def cb_menu_today(call: CallbackQuery, session: AsyncSession) -> None:
+    await call.answer()
+    await send_today_task(call.message, session)
+
+
+@router.callback_query(F.data == "menu:schedule")
+async def cb_menu_schedule(call: CallbackQuery, session: AsyncSession) -> None:
+    await call.answer()
+    await cmd_schedule(call.message, session)
+
+
+@router.callback_query(F.data == "menu:progress")
+async def cb_menu_progress(call: CallbackQuery, session: AsyncSession) -> None:
+    await call.answer()
+    stats = await count_progress(session, call.from_user.id)
+    plans = await get_active_plans(session, call.from_user.id)
+    total   = stats["total"]
+    correct = stats["correct"]
+    pct     = round(correct / total * 100) if total else 0
+    plan_lines = []
+    for p in plans:
+        plan_title = p.template.title.split("·")[0].strip()
+        plan_lines.append(
+            f"• <b>{p.template.subject.name}</b> — «{plan_title}», "
+            f"день {p.current_day}/{p.template.total_days}"
+        )
+    plan_info = ("\n\n📋 Активные планы:\n" + "\n".join(plan_lines)) if plan_lines else ""
+    await call.message.answer(
+        f"📈 <b>Прогресс</b>\n\n"
+        f"Всего ответов: <b>{total}</b>\n"
+        f"Верно: <b>{correct}</b> ({pct}%)"
+        f"{plan_info}",
+        parse_mode="HTML",
+    )
+
+
+# ── «🆘 Поддержка» ────────────────────────────────────────────
+
+@router.message(F.text == MENU_SUPPORT)
+async def cmd_support(message: Message) -> None:
+    await message.answer(SUPPORT_TEXT, parse_mode="HTML")
+
+
 # ── /profile ─────────────────────────────────────────────────
 
 @router.message(Command("profile"))
@@ -53,7 +157,7 @@ async def cmd_profile(message: Message, session: AsyncSession) -> None:
     user = await get_user(session, message.from_user.id)
     if user is None or not user.onboarded:
         await message.answer(
-            "Профиль ещё не настроен. Открой меню → «🎯 Настроить подготовку» или /setup.",
+            "Профиль ещё не настроен. Нажми «📋 Меню» → «🎯 Настроить подготовку» или /setup.",
             reply_markup=main_menu_kb(),
         )
         return
@@ -84,37 +188,6 @@ async def cmd_profile(message: Message, session: AsyncSession) -> None:
         f"Рассылка: {user.notify_count}×/день — {times}",
         f"Подписка: {sub_status}",
     ]
-    await message.answer("\n".join(lines), parse_mode="HTML")
-
-
-# ── «📚 Мои предметы» ────────────────────────────────────────
-
-@router.message(F.text == MENU_SUBJECTS)
-async def cmd_my_subjects(message: Message, session: AsyncSession) -> None:
-    subjs = await get_user_subjects(session, message.from_user.id)
-    plans = await get_active_plans(session, message.from_user.id)
-    if not subjs:
-        await message.answer(
-            "Пока не выбрано ни одного предмета. "
-            "Нажми «🎯 Настроить подготовку» или /setup."
-        )
-        return
-
-    plan_by_subj = {p.template.subject_id: p for p in plans}
-    lines = ["📚 <b>Мои предметы</b>"]
-    for us in subjs:
-        s = us.subject
-        p = plan_by_subj.get(s.id)
-        if p:
-            plan_title = p.template.title.split("·")[0].strip()
-            lines.append(
-                f"• <b>{s.name}</b> — план «{plan_title}», "
-                f"день {p.current_day}/{p.template.total_days}"
-            )
-        else:
-            lines.append(f"• <b>{s.name}</b> — план не настроен")
-    lines.append("")
-    lines.append("Чтобы изменить набор предметов — «🎯 Настроить подготовку» (сбросит планы).")
     await message.answer("\n".join(lines), parse_mode="HTML")
 
 
